@@ -1,0 +1,317 @@
+---
+title: "HES 505: Lesson 8 code"
+format: html
+author:
+  name: Becca Thomas-Kuzilik
+  affiliation:
+    name: HES 505 - Intro to Spatial Data in R
+---
+
+## Objectives
+
+Now that you know how to read in some spatial data, we’ll spend a bit of time learning the `sf` and `terra` syntax for accessing and changing the projection, extent, and resolution. By the end of this lesson, you should be able to:
+
+1. Access the current CRS, extent, and resolution of a spatial data object
+
+2. Use `sf` and `terra` to modify 1 spatial attribute or all 3 at once
+
+3. Align vector and raster data for analysis and combination
+
+## Load Packages
+
+```{r load packages}
+#| message: false
+#| warning: false
+library(googledrive)
+library(sf)
+library(terra)
+library(tidyterra)
+library(tidyverse)
+```
+
+## Load Function that Allows Data Download from Google Drive
+
+There's a script in the utilities folder called download_utils.R. This file has some custom functions for downloading data directly from websites and from a Google Drive Folder. In order to give yourself access to these functions you’ll need to source them into your environment. You can do this by typing:
+
+```{r Load Custom Function}
+source(here::here("scripts/utilities/download_utils.R"))
+```
+
+## Load data
+
+```{r source data}
+file_list <- drive_ls(drive_get(as_id("https://drive.google.com/drive/u/1/folders/1PwfUX2hnJlbnqBe3qvl33tFBImtNFTuR")))[-1,]
+```
+
+```{r save data to GitHub}
+file_list %>% 
+  dplyr::select(id, name) %>%
+  purrr::pmap(function(id, name) {
+    gdrive_folder_download(list(id = id, name = name),
+                           dstfldr = "inclass08")
+  })
+```
+
+```{r read in data}
+cejust_shp <- read_sf("data/original/inclass08/cejst.shp")
+fire_prob <- rast("data/original/inclass08/wildfire.tif")
+```
+
+## Explore vector data
+
+We can look at the bounding box of the whole shapefile, or a subset of locations using `filter` (this will not remove them from the shapefile, just give you the dimensions of the specified filtered data). Extent = how much of the world does the data cover?
+
+```{r extent of shp}
+st_bbox(cejust_shp)
+table(cejust_shp$SF)
+
+cejust_shp %>% 
+  filter(., SF == "Idaho") %>% 
+  st_bbox()
+table(cejust_shp$SF)
+
+cejust_shp %>% 
+  filter(., SF == "Idaho") %>% 
+  st_bbox(.) %>% 
+  class()
+```
+
+In order to plot the bounding boxes, we have to convert them to a sfc object. We can do this to compare how different the bbox is for the entire dataset (black box) vs. the bbox of a filtered subset (Idaho in this case, red box)
+
+```{r convert bbox to sfc and make simple plot}
+all_bbox <- st_bbox(cejust_shp) %>%
+  st_as_sfc()
+
+ID_bbox <- cejust_shp %>% 
+  filter(., SF == "Idaho") %>% 
+  st_bbox() %>% 
+  st_as_sfc()
+
+plot(all_bbox)
+plot(ID_bbox, add = TRUE, border = "red")
+```
+
+We can also use `ggplot2` to make spatially aware maps of sfc objects. We first specify we want to create a ggplot object, then we add our layers one at a time with their own `geom_sf` call. This is also where we set the outline and fill colors manually vs. telling ggplot to color a column via `aes()`
+
+``` {r use ggplot to plot bbox as sfc objects}
+ggplot() +
+  geom_sf(data = all_bbox, color = "yellow", fill = "darkorchid4") +
+  geom_sf(data = ID_bbox, fill = "orangered") +
+  theme_bw()
+```
+
+## Explore raster data
+
+`terra` has slightly different syntax. To see the extent of rasters, we use `ext` vs. `st_bbox`. We can also plot the extent (red box) + add the raster data (map with values). As we can see, `ext` returns a box around the entire SpatRaster object. 
+```{r find extent of raster layer and plot}
+ext(fire_prob)
+class(ext(fire_prob))
+class(fire_prob)
+
+plot(ext(fire_prob), border = "red")
+plot(fire_prob, add = TRUE)
+```
+
+Like with vector data, we can filter raster data with `tidyterra`. We use `filter` in largely the same way - it keeps only the values that meet the filter criteria - but the extent won't update to only include the filtered subset (we can tell by the red box)
+
+```{r filter raster data and plot}
+fire_subset <- fire_prob %>% 
+  filter(WHP_ID > 30000)
+
+plot(ext(fire_subset), border = "red")
+plot(fire_subset, add = TRUE)
+```
+
+## Change extent of data
+
+### Vector data
+
+There are ways to manually change the extent of data without changing anything else (maybe you need to create an insert map). The code below is creating a new shrunk bbox, but not sure how repeatable the code is. You'd want to do the same general thing, but since the data is currently in a projection that uses degrees, it is tricky (-1, +1 are less meaningful than other things...)
+
+```{r change extent of vector}
+orig_bbox <- st_bbox(cejust_shp)
+
+orig_bbox
+new_bbox <- st_bbox(c(orig_bbox["xmin"] + 1, orig_bbox["xmax"] - 1, orig_bbox["ymax"] - 1, orig_bbox["ymin"] + 1), 
+                      crs = st_crs(orig_bbox)) %>% 
+                      st_as_sfc()
+```
+
+Check that this did what you wanted with a plot
+
+```{r check new vector extent with plot}
+
+ggplot() +
+  geom_sf(data = st_as_sfc(orig_bbox), color = "yellow", fill = "darkorchid4") +
+  geom_sf(data = new_bbox, fill = "orangered") +
+  theme_bw()
+```
+
+### Raster data
+
+We can also change the extent of the raster data, but similarly, not sure what is happening outside this specific example or how the decisions were made (or why some - and some +). We do know that the units for the raster project is in meters, so slight different than before (I think we are shrinking the ext by 100 km here)
+
+```{r change extent of raster}
+orig_ext <- as.vector(ext(fire_prob))
+
+new_ext <- ext(as.numeric(c(
+  orig_ext["xmin"] + 100000,
+  orig_ext["xmax"] - 100000,
+  orig_ext["ymin"] + 100000,
+  orig_ext["ymax"] - 100000)))
+```
+
+We can also check these with a plot (the code from the exercise is slight wrong, corrected here)
+
+```{r check new raster extent with plot}
+plot(ext(fire_prob))
+plot(new_ext, add = TRUE, border = "red")
+```
+
+## Resolution of raster data
+
+We don't generally think about resolution in vector data since it can be stretched (we instead need to think of the underlying support of the data... not 100% sure what this means, dont' fully understand "support"). We do need to think about resolution of raster data though. Resolution = the accuracy that the location and shape of a map's features can be depicted (size of grid cell). We can determine the current resolution of a raster with the `res` function
+
+```{r find current resolution}
+res(fire_prob)
+```
+
+We can change the resolution of the raster data with functions in the `terra` package: `aggregate` to coarsen the resolution and `disagg` to sharpen the resolution. The "fact" argument is the key, it is the factor by which we want to multiply or divide the current resolution when we create our new raster surface
+
+```{r change resolution}
+coarser_fire <- aggregate(fire_prob, fact = 5)
+finer_fire <- disagg(fire_prob, fact = 5)
+
+res(fire_prob)
+res(fire_prob)*5
+res(coarser_fire)
+res(fire_prob)/5
+res(finer_fire)
+```
+
+The overall extent of the data has changed slightly by changing the resolution. We can check this... not sure what else we're looking at or taking away from this...
+```{r check extent of new resolution}
+ext(fire_prob)
+ext(coarser_fire)
+ext(finer_fire)
+```
+
+We can also plot the new resolutions to see how they compare. Since this is a fairly zoomed out view with not a ton of variation, the change is kind of hard to see
+
+```{r plot new resolutions}
+plot(fire_prob)
+plot(coarser_fire)
+plot(finer_fire)
+```
+
+## Projections
+
+### Vector data
+
+We can check the current projection of vector data with `st_crs`. This will return a lot of information, but we are interested in the datum (geodetic like WGS84 or local like NAD83) and projection (which will have a long name, but also a code that will either be returned in the string or can be looked up). Here we can see it is WGS84 and in the last line, there's a EPSG code of 4326
+
+```{r find vector crs}
+st_crs(cejust_shp)
+```
+
+### Raster data
+
+We can do the same thing with raster data with `crs`. The output is different and less helpful... Matt doesn't have a lot of info in the lesson, but assuming NAD83 and EPSG of 4269
+
+```{r find raster crs}
+crs(fire_prob)
+```
+
+## Reproject data
+
+**In general, you should always re-project your vector data to match your raster data!** Not sure what you do when you have multiple rasters with different crs... maybe make sure they have the same resolution then you can do it safely? Not sure
+
+### Vector data
+
+In order to reproject vector data, we can use the `st_transform` function. The first argument in `st_transform` is the layer you are reprojecting, and the second "crs =" argument is telling it what you want the new projection to be (in this case we want to match the projection of our raster layer).
+
+From Matt's lesson (not translating because I don't fully understand) "You’ll notice here that we used `st_crs` to extract the CRS from our raster dataset. For several common functions (like accessing CRS), `sf` will accept `terra` objects and vice versa. This is not generally the case, though, and if we need to use `terra` to work on vector data we’ll need to convert our sf object to a vect object using `terra`’s `vect()` function."
+
+```{r reproject vector data to match raster}
+cejust_reproject <- cejust_shp %>% 
+  st_transform(., crs = st_crs(fire_prob))
+```
+
+We can check that things changed
+
+```{r check new projection}
+st_crs(cejust_shp)
+st_crs(cejust_reproject)
+
+st_bbox(cejust_shp)
+st_bbox(cejust_reproject)
+```
+
+### Raster data (bad idea)
+
+Technically, we can reproject raster data to match vector data. It's not ideal, but `?project` supposedly offers suggestions on how to do it safely/without breaking things... 
+
+To reproject raster's, we can use the `project` function from `terra`. This function needs a "wkt" string to work vs. a epsg code or crs, so you have to get that first. You can then use `project`, which like `st_transform` uses the first argument to say which layer is being reprojected, and the second argument to specify what new project you want.
+
+```{r reproject raster to match vector}
+target_crs <- st_crs(cejust_shp)$wkt
+fire_reproj <- project(fire_prob, target_crs)
+```
+
+We can check that it worked
+
+```{r check reprojection}
+crs(fire_prob)
+crs(fire_reproj)
+
+ext(fire_prob)
+ext(fire_reproj)
+
+res(fire_prob)
+res(fire_reproj)
+```
+
+## Making Tabular Data Spatial
+
+### Picking a datum
+
+One thing that happens fairly regularly is that we get a spreadsheet with coordinates that isn’t otherwise spatial. The PurpleAir data that we used in the last unit is a great example of this. The sensor information data comes with info about the sensors along with the latitude and longitude for each sensor.
+
+We can make this spatial (and maybe even start to think about smoke in the context of both fire probability and social vulnerability). But how do we do that?? The first clue is that the coordinates are in latitude and longitude. This tells us that we are dealing with a geocentric reference system (or datum) - that is, one that has not been projected and provides estimates around the globe. But which one do we use??
+
+As we discussed, NAD83 is a local datum, one designed such that the spheroids (lines of latitude and longitude) fit the earth’s surface well in a particular location. Alternatively, WGS84 and ITRF2014 are geodetic datums meaning that they offer a more uniform and extensive coverage for the entirety of the globe (even if less accurate for a particular location).
+
+One of the primary differences in geodetic and local datums is how they account for earth’s movement. For the NAD83 datum, the reference point is fixed to the North American tectonic plate and only moves in association with the movement of that plate. WGS84 and ITRF2014 account for the fact that all of the earth’s tectonic plates are moving and moving at different rates, hence differences arise (slowly) between the different datums as the earth moves.
+
+Assigning anyone of of these datums is relatively trivial computationally so we’ll try all 3. We’ll use read_csv to get the tabular data, convert it using st_as_sf, provide the columns with the location information for the coords argument, and provide the epsg code for each datum to the crs argument.
+
+```{r read in data with wgs84}
+pa_locations_wgs <- read_csv("data/original/inclass08/pa.csv") %>% 
+  st_as_sf(.,
+           coords = c("longitude", "latitude"),
+           crs = 4326) 
+```
+
+```{r read in data with nad83}
+pa_locations_nad <- read_csv("data/original/inclass08/pa.csv") %>% 
+  st_as_sf(.,
+           coords = c("longitude", "latitude"),
+           crs = 4269)
+```
+
+```{r read in data with itrf}
+pa_locations_itrf <- read_csv("data/original/inclass08/pa.csv") %>% 
+  st_as_sf(.,
+           coords = c("longitude", "latitude"),
+           crs = 7789)
+```
+
+It's hard to plot these together since they have different projections, but we can look at the bounding boxes to see how different they are (or aren't)
+
+```{r compare bbox}
+st_bbox(pa_locations_wgs)
+st_bbox(pa_locations_nad)
+st_bbox(pa_locations_itrf)
+```
+
+As you can see, given the level of precision that we are reporting and the relatively small amount of movement a tectonic plate undergoes in year, the differences are not particularly obvious in the small window that we are looking at. We’ll play with these things more in the coming weeks. For now, it should be enough that you’ve learned to convert the tabular dataset to a set of POINTS
